@@ -1,179 +1,589 @@
-import copy
-
-import numpy as np
 import pandas as pd
-from df4loop import DFIterator
+import pytest
+
+from autoarm import AssociationRules, Dataset, FrequentItemsets, Recommender
+
+sample_dataset = {
+    "transaction_id": 
+    [1, 1, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 5, 5, 6, 6, 6, 7, 7, 8, 8],
+    "item_id": [
+        "A", "B", "C", "D", "A", "B", "C", "A", "B", "A", "E", "F", "B", "C", "D",
+        "F","B","C", "F", "B", "A", "E"
+    ],
+}
 
 
-class Recommender:
-    """
-    Recommender contains association rules for recommended use.
-    """
-    __RANK = "rank"
-    __ANTECEDENTS = "antecedents"
-    __CONSEQUENTS = "consequents"
-    __SUPPORT = "support"
-    __CONFIDENCE = "confidence"
-    __LIFT = "lift"
-    __COLUMNS = [__ANTECEDENTS, __CONSEQUENTS, __SUPPORT, __CONFIDENCE, __LIFT]
-    __COLUMNS_WITH_RANK = [
-        __RANK,
-        __ANTECEDENTS,
-        __CONSEQUENTS,
-        __SUPPORT,
-        __CONFIDENCE,
-        __LIFT,
-    ]
-    __SORT_BY_ANTECEDENTS_CONSEQUENTS = [__ANTECEDENTS, __CONSEQUENTS]
-    __SORT_BY_CONFIDENCE_SUPPORT_LIFT = [__CONFIDENCE, __SUPPORT, __LIFT]
-    __SORT_BY_LIFT_SUPPORT_CONFIDENCE = [__LIFT, __SUPPORT, __CONFIDENCE]
-    __DEFAULT_SORT_BY_COLUMNS = {
-        __CONFIDENCE: __SORT_BY_CONFIDENCE_SUPPORT_LIFT,
-        __LIFT: __SORT_BY_LIFT_SUPPORT_CONFIDENCE,
+def test():
+    sample_df = pd.DataFrame.from_dict(sample_dataset)
+    transaction_column = "transaction_id"
+    item_column = "item_id"
+    dataset = Dataset(sample_df, transaction_column, item_column)
+    frequent_itemsets = FrequentItemsets(dataset)
+    association_rules = AssociationRules(frequent_itemsets)
+
+    items = ["A"]
+    recommender = Recommender(association_rules)
+    recommend_rules = recommender.recommend(items)
+    assert type(recommend_rules) == pd.core.frame.DataFrame
+
+    items = ["other"]
+    recommender = Recommender(association_rules)
+    recommend_rules = recommender.recommend(items)
+    assert type(recommend_rules) == pd.core.frame.DataFrame
+
+    recommend_rules = recommender.recommend(items,
+                                            n=1,
+                                            allow_from_items=True,
+                                            metric="confidence")
+    assert type(recommend_rules) == pd.core.frame.DataFrame
+
+    with pytest.raises(ValueError):
+        recommender = Recommender(association_rules, n=0)
+
+    with pytest.raises(ValueError):
+        metric = "other"
+        recommender = Recommender(association_rules, metric=metric)
+
+    with pytest.raises(ValueError):
+        items = []
+        recommender = Recommender(association_rules)
+        recommend_rules = recommender.recommend(items)
+
+    with pytest.raises(ValueError):
+        items = ["A"]
+        recommender = Recommender(association_rules)
+        recommend_rules = recommender.recommend(items, n=0)
+
+    with pytest.raises(ValueError):
+        items = ["A"]
+        metric = "other"
+        recommender = Recommender(association_rules)
+        recommend_rules = recommender.recommend(items, metric=metric)
+
+    # min_support=0.01, metric="confidence", min_threshold=0
+    sample_df = pd.DataFrame.from_dict(sample_dataset)
+    dataset = Dataset(sample_df, transaction_column, item_column)
+    frequent_itemsets = FrequentItemsets(dataset, min_support=0.01)
+    assert len(frequent_itemsets.to_frame()) == 25
+
+    association_rules = AssociationRules(frequent_itemsets, min_threshold=0)
+    association_rules.to_frame()
+    assert len(association_rules.to_frame()) == 90
+
+    # min_support=0.01, metric="confidence", min_threshold=0
+    sample_df = pd.DataFrame.from_dict(sample_dataset)
+    dataset = Dataset(sample_df, transaction_column, item_column)
+    frequent_itemsets = FrequentItemsets(dataset)
+    assert len(frequent_itemsets.to_frame()) == 4
+
+    association_rules = AssociationRules(frequent_itemsets)
+    association_rules.to_frame()
+    assert len(association_rules.to_frame()) == 1
+
+def test_with_various_patterns_of_data():
+    sample_dataset = {
+        'transaction_id':
+        [1, 1, 1, 2, 2, 3, 3, 3, 4, 4, 5, 5, 5, 6, 6, 6, 6, 7, 7],
+        'item_id': [
+            "X", "Y", "Z", "X", "B", "Y", "A", "C", "A", "C", "X", "Y", "Z",
+            "X", "Y", "B", "A", "X", "B"
+        ],
     }
-    __DEFAULT_N = 1
-    __divided_rules = pd.DataFrame()
-    __n = 1
-    __metric = "confidence"
-    __allow_from_items = False
+    df = pd.DataFrame.from_dict(sample_dataset)
+    dataset = Dataset(df, "transaction_id", "item_id")
+    frequent_itemsets = FrequentItemsets(dataset, min_support=0.01)
+    association_rules = AssociationRules(frequent_itemsets,
+                                         metric="confidence",
+                                         min_threshold=0.1)
 
-    def __init__(self, association_rules, n=None, metric=None, allow_from_items=False):
-        self.__divided_rules = self.__divide_consequents(association_rules.to_frame())
-        if n is None:
-            n = self.__DEFAULT_N
-        if n < 1:
-            raise ValueError()
-        if metric is None:
-            metric = self.__CONFIDENCE
-        if metric not in [self.__CONFIDENCE, self.__LIFT]:
-            raise ValueError()
-        self.__n = n
-        self.__metric = metric
-        self.__allow_from_items = allow_from_items
+    # items size is one, metric is "confidence", allow_from_items is False
+    recommender = Recommender(association_rules)
 
-    def recommend(
-        self, items, n=None, metric=None, allow_from_items=None, sort_by_columns=None
-    ):
-        """
-        Returns association rules that are useful for recommendations.
-        """
-        if len(frozenset(items)) < 1:
-            raise ValueError()
-        if n is None:
-            n = self.__n
-        if n < 1:
-            raise ValueError()
-        if metric is None:
-            metric = self.__metric
-        if metric not in [self.__CONFIDENCE, self.__LIFT]:
-            raise ValueError()
-        if allow_from_items is None:
-            allow_from_items = self.__allow_from_items
-        rules_df = self.__match_with_input_items(self.__divided_rules, frozenset(items))
-        if not allow_from_items:
-            rules_df = self.__exclude_input_items(rules_df, frozenset(items))
-        if sort_by_columns is None:
-            sort_by_columns = list()
-        if len(sort_by_columns).__eq__(0):
-            sort_by_columns = self.__DEFAULT_SORT_BY_COLUMNS[metric]
-        return self.__select_top_n_consequences(
-            rules_df, n, sort_by_columns=sort_by_columns
-        )
+    items = ["X"]
+    recommend_rules = recommender.recommend(items, n=6, metric="confidence")
 
-    def __divide_consequents(self, rules_df):
-        """
-        Divide the consequents.
-        """
-        if len(rules_df).__eq__(0):
-            return pd.DataFrame()
-        df_iterator = DFIterator(rules_df)
-        tmp_dist = dict()
-        for row in df_iterator.iterrows(return_indexes=False):
-            for consequent in row[self.__CONSEQUENTS]:
-                tmp_row = copy.deepcopy(row)
-                tmp_row[self.__CONSEQUENTS] = frozenset(consequent)
-                tmp_dist[len(tmp_dist)] = tmp_row
-        divided_rules_df = pd.DataFrame.from_dict(tmp_dist, orient="index")
-        if len(divided_rules_df).__eq__(0):
-            return pd.DataFrame()
-        divided_rules_df.columns = rules_df.columns
-        return divided_rules_df
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset("X"))
+    assert (recommend_rules["consequents"][0] == frozenset(("B")))
+    s = 0.428571
+    c = 0.6
+    l = 1.40
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
 
-    def __match_with_input_items(self, rules_df, items):
-        """
-        Match rules with items.
-        """
-        if len(rules_df).__eq__(0):
-            return pd.DataFrame()
-        df_iterator = DFIterator(rules_df)
-        tmp_dist = dict()
-        for row in df_iterator.iterrows(return_indexes=False):
-            if frozenset(items).issuperset(row[self.__ANTECEDENTS]):
-                tmp_dist[len(tmp_dist)] = copy.deepcopy(row)
-        matched_rules_df = pd.DataFrame.from_dict(tmp_dist, orient="index")
-        if len(matched_rules_df).__eq__(0):
-            return pd.DataFrame()
-        matched_rules_df.columns = rules_df.columns
-        return matched_rules_df
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset("X"))
+    assert (recommend_rules["consequents"][1] == frozenset(("Y")))
+    s = 0.428571
+    c = 0.6
+    l = 1.05
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
 
-    def __exclude_input_items(self, rules_df, items):
-        """
-        Exclude input items from recommendation candidates.
-        """
-        if len(rules_df).__eq__(0):
-            return pd.DataFrame()
-        df_iterator = DFIterator(rules_df)
-        tmp_dist = dict()
-        for row in df_iterator.iterrows(return_indexes=False):
-            if not frozenset(items).issuperset(row[self.__CONSEQUENTS]):
-                tmp_dist[len(tmp_dist)] = copy.deepcopy(row)
-        excluded_rules_df = pd.DataFrame.from_dict(tmp_dist, orient="index")
-        if len(excluded_rules_df).__eq__(0):
-            return pd.DataFrame()
-        excluded_rules_df.columns = rules_df.columns
-        return excluded_rules_df
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset("X"))
+    assert (recommend_rules["consequents"][2] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.4
+    l = 1.40
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
 
-    def __select_top_n_consequences(self, rules_df, n=None, sort_by_columns=None):
-        """
-        Select top n consequences. Sort based on the specified metric.
-        """
-        if len(rules_df).__eq__(0):
-            return self.__make_n_rows(rules_df, n)
-        rules_df = rules_df.sort_values(
-            by=self.__SORT_BY_ANTECEDENTS_CONSEQUENTS
-        ).reset_index(drop=True)
-        if n is None:
-            n = self.__DEFAULT_N
-        if sort_by_columns is None:
-            sort_by_columns = list()
-        if len(sort_by_columns) > 0:
-            tmp_list = list()
-            while len(sort_by_columns) > len(tmp_list):
-                tmp_list.append(False)
-            rules_df = rules_df.sort_values(
-                by=sort_by_columns, ascending=tmp_list
-            ).reset_index(drop=True)
-        df_iterator = DFIterator(rules_df)
-        already_selected_consequents = set()
-        tmp_dist = dict()
-        for row in df_iterator.iterrows(return_indexes=False):
-            if not already_selected_consequents.issuperset(row[self.__CONSEQUENTS]):
-                tmp_dist[len(tmp_dist)] = copy.deepcopy(row)
-                for consequent in row[self.__CONSEQUENTS]:
-                    already_selected_consequents.add(consequent)
-        tmp_df = pd.DataFrame.from_dict(tmp_dist, orient="index")
-        tmp_df.columns = rules_df.columns
-        tmp_df = self.__make_n_rows(tmp_df, n)
-        selected_rules_df = tmp_df.reset_index(drop=True)
-        selected_rules_df[self.__RANK] = range(1, n + 1)
-        return selected_rules_df[self.__COLUMNS_WITH_RANK]
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("X"))
+    assert (recommend_rules["consequents"][3] == frozenset(("A")))
+    s = 0.142857
+    c = 0.2
+    l = 1.40
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
 
-    def __make_n_rows(self, df, n):
-        """
-        Adjust the pandas.DataFrame to n rows. The value of the added rows are NaN.
-        """
-        while len(df) < n:
-            df = df.append([np.nan])
-        while len(df) > n:
-            df = df[:-1]
-        return df
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+
+    # items size is one, metric is "confidence", allow_from_items is True
+    recommender = Recommender(association_rules)
+
+    items = ["X"]
+    recommend_rules = recommender.recommend(items,
+                                            n=6,
+                                            metric="confidence",
+                                            allow_from_items=True)
+
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset("X"))
+    assert (recommend_rules["consequents"][0] == frozenset(("B")))
+    s = 0.428571
+    c = 0.6
+    l = 1.40
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
+
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset("X"))
+    assert (recommend_rules["consequents"][1] == frozenset(("Y")))
+    s = 0.428571
+    c = 0.6
+    l = 1.05
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
+
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset("X"))
+    assert (recommend_rules["consequents"][2] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.4
+    l = 1.40
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
+
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("X"))
+    assert (recommend_rules["consequents"][3] == frozenset(("A")))
+    s = 0.142857
+    c = 0.2
+    l = 1.40
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
+
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+
+    # items size is two or more, metric is "confidence", allow_from_items is False
+    recommender = Recommender(association_rules)
+
+    items = ["X", "Y"]
+    recommend_rules = recommender.recommend(items, n=6, metric="confidence")
+
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][0] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.666667
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
+
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset("X"))
+    assert (recommend_rules["consequents"][1] == frozenset(("B")))
+    s = 0.428571
+    c = 0.600000
+    l = 1.400000
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
+
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset("Y"))
+    assert (recommend_rules["consequents"][2] == frozenset(("A")))
+    s = 0.285714
+    c = 0.500000
+    l = 1.166667
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
+
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("Y"))
+    assert (recommend_rules["consequents"][3] == frozenset(("C")))
+    s = 0.142857
+    c = 0.250000
+    l = 0.875000
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
+
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+
+    # items size is two or more, metric is "confidence", allow_from_items is True
+    recommender = Recommender(association_rules)
+
+    items = ["X", "Y"]
+    recommend_rules = recommender.recommend(items,
+                                            n=6,
+                                            metric="confidence",
+                                            allow_from_items=True)
+
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset(("Y")))
+    assert (recommend_rules["consequents"][0] == frozenset(("X")))
+    s = 0.428571
+    c = 0.750000
+    l = 1.050000
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
+
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][1] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.666667
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
+
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset("X"))
+    assert (recommend_rules["consequents"][2] == frozenset(("B")))
+    s = 0.428571
+    c = 0.600000
+    l = 1.400000
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
+
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("X"))
+    assert (recommend_rules["consequents"][3] == frozenset(("Y")))
+    s = 0.428571
+    c = 0.600000
+    l = 1.050000
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
+
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+    assert (recommend_rules["antecedents"][4] == frozenset("Y"))
+    assert (recommend_rules["consequents"][4] == frozenset(("A")))
+    s = 0.285714
+    c = 0.500000
+    l = 1.166667
+    assert (s - 0.000001 <= recommend_rules["support"][4] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][4] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][4] <= l + 0.000001)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+    assert (recommend_rules["antecedents"][5] == frozenset("Y"))
+    assert (recommend_rules["consequents"][5] == frozenset(("C")))
+    s = 0.142857
+    c = 0.250000
+    l = 0.875000
+    assert (s - 0.000001 <= recommend_rules["support"][5] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][5] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][5] <= l + 0.000001)
+
+    # items size is one, metric is "lift", allow_from_items is False
+    recommender = Recommender(association_rules)
+
+    items = ["X"]
+    recommend_rules = recommender.recommend(items, n=6, metric="lift")
+
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset(("X")))
+    assert (recommend_rules["consequents"][0] == frozenset(("B")))
+    s = 0.428571
+    c = 0.6
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
+
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset(("X")))
+    assert (recommend_rules["consequents"][1] == frozenset(("Y")))
+    s = 0.285714
+    c = 0.4
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
+
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset("X"))
+    assert (recommend_rules["consequents"][2] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.4
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
+
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("X"))
+    assert (recommend_rules["consequents"][3] == frozenset(("A")))
+    s = 0.142857
+    c = 0.2
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
+
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+
+    # items size is one, metric is "lift", allow_from_items is True
+    recommender = Recommender(association_rules)
+
+    items = ["X"]
+    recommend_rules = recommender.recommend(items,
+                                            n=6,
+                                            metric="lift",
+                                            allow_from_items=True)
+
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset(("X")))
+    assert (recommend_rules["consequents"][0] == frozenset(("B")))
+    s = 0.428571
+    c = 0.6
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
+
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset(("X")))
+    assert (recommend_rules["consequents"][1] == frozenset(("Y")))
+    s = 0.285714
+    c = 0.4
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
+
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset("X"))
+    assert (recommend_rules["consequents"][2] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.4
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
+
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("X"))
+    assert (recommend_rules["consequents"][3] == frozenset(("A")))
+    s = 0.142857
+    c = 0.2
+    l = 1.4
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
+
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+
+    # items size is two or more, metric is "lift", allow_from_items is False
+    recommender = Recommender(association_rules)
+
+    items = ["X", "Y"]
+    recommend_rules = recommender.recommend(items, n=6, metric="lift")
+
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][0] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.666667
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
+
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][1] == frozenset(("B")))
+    s = 0.142857
+    c = 0.333333
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
+
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][2] == frozenset(("A")))
+    s = 0.142857
+    c = 0.333333
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
+
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("Y"))
+    assert (recommend_rules["consequents"][3] == frozenset(("C")))
+    s = 0.142857
+    c = 0.250000
+    l = 0.875000
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
+
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+
+    # items size is two or more, metric is "lift", allow_from_items is True
+    recommender = Recommender(association_rules)
+
+    items = ["X", "Y"]
+    recommend_rules = recommender.recommend(items,
+                                            n=6,
+                                            metric="lift",
+                                            allow_from_items=True)
+
+    ## 1
+    assert (recommend_rules["rank"][0] == 1)
+    assert (recommend_rules["antecedents"][0] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][0] == frozenset(("Z")))
+    s = 0.285714
+    c = 0.666667
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][0] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][0] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][0] <= l + 0.000001)
+
+    ## 2
+    assert (recommend_rules["rank"][1] == 2)
+    assert (recommend_rules["antecedents"][1] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][1] == frozenset(("B")))
+    s = 0.142857
+    c = 0.333333
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][1] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][1] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][1] <= l + 0.000001)
+
+    ## 3
+    assert (recommend_rules["rank"][2] == 3)
+    assert (recommend_rules["antecedents"][2] == frozenset(("X", "Y")))
+    assert (recommend_rules["consequents"][2] == frozenset(("A")))
+    s = 0.142857
+    c = 0.333333
+    l = 2.333333
+    assert (s - 0.000001 <= recommend_rules["support"][2] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][2] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][2] <= l + 0.000001)
+
+    ## 4
+    assert (recommend_rules["rank"][3] == 4)
+    assert (recommend_rules["antecedents"][3] == frozenset("Y"))
+    assert (recommend_rules["consequents"][3] == frozenset(("X")))
+    s = 0.285714
+    c = 0.500000
+    l = 1.750000
+    assert (s - 0.000001 <= recommend_rules["support"][3] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][3] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][3] <= l + 0.000001)
+
+    ## 5
+    assert (recommend_rules["rank"][4] == 5)
+    assert (recommend_rules["antecedents"][4] == frozenset("X"))
+    assert (recommend_rules["consequents"][4] == frozenset(("Y")))
+    s = 0.285714
+    c = 0.400000
+    l = 1.400000
+    assert (s - 0.000001 <= recommend_rules["support"][4] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][4] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][4] <= l + 0.000001)
+
+    ## 6
+    assert (recommend_rules["rank"][5] == 6)
+    assert (recommend_rules["antecedents"][5] == frozenset("Y"))
+    assert (recommend_rules["consequents"][5] == frozenset(("C")))
+    s = 0.142857
+    c = 0.250000
+    l = 0.875000
+    assert (s - 0.000001 <= recommend_rules["support"][5] <= s + 0.000001)
+    assert (c - 0.000001 <= recommend_rules["confidence"][5] <= c + 0.000001)
+    assert (l - 0.000001 <= recommend_rules["lift"][5] <= l + 0.000001)
